@@ -23,7 +23,7 @@ BASE_URL = "https://platform-api2.max.ru"
 if not MAX_TOKEN or not DATABASE_URL:
     raise ValueError("Не заданы MAX_TOKEN или DATABASE_URL")
 
-PHONE_PATTERN = re.compile(r'^(\+7|7|8)?[\s\-]?$?\d{3}$?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}$')
+PHONE_PATTERN = re.compile(r'^(\+7|7|8)?[\s\-]?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}$')
 EMAIL_PATTERN = re.compile(r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$')
 
 def format_numbered_list(items, start_from=1, truncate=True):
