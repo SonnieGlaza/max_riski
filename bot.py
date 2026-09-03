@@ -9,7 +9,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 import aiohttp
 import ssl
-import certifi  # <-- добавлено
+import certifi
 
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [MAX] %(levelname)s %(message)s")
 log = logging.getLogger("max_bot")
@@ -23,7 +23,7 @@ BASE_URL = "https://platform-api2.max.ru"
 if not MAX_TOKEN or not DATABASE_URL:
     raise ValueError("Не заданы MAX_TOKEN или DATABASE_URL")
 
-PHONE_PATTERN = re.compile(r'^(\+7|7|8)?[\s\-]?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}$')
+PHONE_PATTERN = re.compile(r'^(\+7|7|8)?[\s\-]?$?\d{3}$?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}$')
 EMAIL_PATTERN = re.compile(r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$')
 
 def format_numbered_list(items, start_from=1, truncate=True):
@@ -757,37 +757,16 @@ async def main():
     log.info("Токен: %s...%s", MAX_TOKEN[:8], MAX_TOKEN[-4:])
     log.info("Base URL: %s", BASE_URL)
 
-    # <-- СКАЧИВАЕМ СЕРТИФИКАТЫ МИНЦИФРЫ И ОБЪЕДИНЯЕМ С CERTIFI -->
-    import urllib.request
-
-    RU_ROOT_CA = "https://gu-st.ru/content/lending/russian_trusted_root_ca_pem.crt"
-    RU_SUB_CA = "https://gu-st.ru/content/lending/russian_trusted_sub_ca_pem.crt"
-
-    combined_certs = certifi.where()  # путь к стандартному cacert.pem
-
-    try:
-        log.info("Скачиваю сертификаты Минцифры...")
-        root_ca_path = "/tmp/russian_trusted_root_ca.pem"
-        sub_ca_path = "/tmp/russian_trusted_sub_ca.pem"
-
-        urllib.request.urlretrieve(RU_ROOT_CA, root_ca_path)
-        urllib.request.urlretrieve(RU_SUB_CA, sub_ca_path)
-
-        # Объединяем certifi + Минцифры в один файл
-        combined_path = "/tmp/combined_cacert.pem"
-        with open(combined_path, "wb") as out:
-            with open(certifi.where(), "rb") as f:
-                out.write(f.read())
-            with open(root_ca_path, "rb") as f:
-                out.write(f.read())
-            with open(sub_ca_path, "rb") as f:
-                out.write(f.read())
-
-        ssl_context = ssl.create_default_context(cafile=combined_path)
-        log.info("Сертификаты Минцифры загружены и объединены с certifi")
-    except Exception as e:
-        log.warning("Не удалось скачать сертификаты Минцифры: %s. Использую только certifi.", e)
+    # <-- ИСПОЛЬЗУЕМ ЛОКАЛЬНЫЙ ФАЙЛ full_certs.pem ВМЕСТО СКАЧИВАНИЯ -->
+    certs_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "full_certs.pem")
+    if not os.path.exists(certs_path):
+        log.error("Файл full_certs.pem не найден по пути: %s", certs_path)
+        log.info("Использую стандартный certifi...")
         ssl_context = ssl.create_default_context(cafile=certifi.where())
+    else:
+        log.info("Загружаю сертификаты из файла: %s", certs_path)
+        ssl_context = ssl.create_default_context(cafile=certs_path)
+        log.info("Сертификаты загружены успешно")
 
     connector = aiohttp.TCPConnector(ssl=ssl_context)
 
@@ -835,7 +814,6 @@ async def main():
 
                 updates = data.get("updates", [])
 
-                # Логируем каждый 10-й poll, даже если пусто
                 if poll_count % 10 == 0:
                     log.info("Poll #%d: получено %d обновлений, marker=%s",
                              poll_count, len(updates), marker)
