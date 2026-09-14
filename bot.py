@@ -27,6 +27,7 @@ if not MAX_TOKEN or not DATABASE_URL:
 
 PHONE_PATTERN = re.compile(r'^(\+7|7|8)?[\s\-]?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}$')
 EMAIL_PATTERN = re.compile(r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$')
+NAME_PATTERN = re.compile(r"^[а-яёА-ЯЁa-zA-Z]+(?:['\-][а-яёА-ЯЁa-zA-Z]+)*$")
 
 def format_numbered_list(items, start_from=1, truncate=True):
     lines = []
@@ -104,7 +105,6 @@ def save_answer(db_id, field, value):
     conn.close()
 
 def check_answered(db_id, step_key):
-    """Проверяет, ответил ли пользователь на текущий шаг."""
     conn = get_db()
     c = conn.cursor()
     if step_key == "consent":
@@ -491,6 +491,38 @@ async def api_get_updates(session, marker=None):
             return {"updates": [], "marker": marker}
         return json.loads(resp_text)
 
+async def api_get_bot_info(session):
+    """Получает информацию о боте — нужен user_id чтобы отличать свои сообщения от пользовательских."""
+    headers = {"Authorization": MAX_TOKEN}
+    try:
+        async with session.get(f"{BASE_URL}/me", headers=headers) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                bot_user_id = data.get("user_id")
+                log.info("Bot user_id: %s, name: %s", bot_user_id, data.get("name"))
+                return bot_user_id
+            else:
+                log.error("GET /me -> %s: %s", resp.status, await resp.text())
+    except Exception as e:
+        log.error("Ошибка GET /me: %s", e)
+    return None
+
+async def api_get_chat_messages(session, chat_id, count=5):
+    """Получает последние сообщения из чата. Возвращает массив (новые первыми)."""
+    headers = {"Authorization": MAX_TOKEN}
+    params = {"chat_id": chat_id, "count": count}
+    try:
+        async with session.get(f"{BASE_URL}/messages", params=params, headers=headers) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                return data.get("messages", [])
+            else:
+                log.debug("GET /messages chat_id=%s -> %s", chat_id, resp.status)
+                return []
+    except Exception as e:
+        log.debug("Ошибка GET /messages: %s", e)
+        return []
+
 async def api_delete_webhook(session):
     headers = {"Authorization": MAX_TOKEN}
     try:
@@ -729,19 +761,10 @@ def generate_xlsx(today_only=False):
     total_fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
 
     district_headers = [
-        "ФИО",
-        "Учебное заведение",
-        "Контакты",
-        "Статус занятости",
-        "Целевой договор",
-        "Опыт работы",
-        "Оценка практик",
-        "Мероприятия",
-        "Резюме",
-        "Собеседование",
-        "Особый статус",
-        "Военный призыв",
-        "Сумма баллов",
+        "ФИО", "Учебное заведение", "Контакты",
+        "Статус занятости", "Целевой договор", "Опыт работы",
+        "Оценка практик", "Мероприятия", "Резюме",
+        "Собеседование", "Особый статус", "Военный призыв", "Сумма баллов",
     ]
 
     score_keys = [
@@ -752,35 +775,24 @@ def generate_xlsx(today_only=False):
 
     def write_score_sheet(workbook, sheet_name, sheet_rows):
         ws2 = workbook.create_sheet(title=sheet_name)
-
         for col_idx, h in enumerate(district_headers, start=1):
             cell = ws2.cell(row=1, column=col_idx, value=h)
             cell.font = header_font
             cell.alignment = Alignment(horizontal="center")
-
-        sorted_rows = sorted(
-            sheet_rows,
-            key=lambda r: r.get("created_at") or datetime.min
-        )
-
+        sorted_rows = sorted(sheet_rows, key=lambda r: r.get("created_at") or datetime.min)
         row_idx = 2
         for r in sorted_rows:
             scores, total = calculate_scores(dict(r))
-
             ws2.cell(row=row_idx, column=1, value=r.get("fio") or "")
             ws2.cell(row=row_idx, column=2, value=r.get("institution") or "")
             ws2.cell(row=row_idx, column=3, value=r.get("contacts") or "")
-
             for i, key in enumerate(score_keys, start=4):
                 val = scores.get(key)
                 ws2.cell(row=row_idx, column=i, value=val if val is not None else "")
-
             total_cell = ws2.cell(row=row_idx, column=13, value=total)
             total_cell.font = bold_font
             total_cell.fill = total_fill
-
             row_idx += 1
-
         for col_idx in range(1, len(district_headers) + 1):
             col_letter = ws2.cell(row=1, column=col_idx).column_letter
             max_len = len(district_headers[col_idx - 1])
@@ -791,17 +803,11 @@ def generate_xlsx(today_only=False):
             ws2.column_dimensions[col_letter].width = min(max_len + 2, 50)
 
     for district_name in DISTRICTS_UNIVERSITIES:
-        district_rows = [
-            r for r in rows
-            if INSTITUTION_TO_DISTRICT.get(r.get("institution")) == district_name
-        ]
+        district_rows = [r for r in rows if INSTITUTION_TO_DISTRICT.get(r.get("institution")) == district_name]
         if district_rows:
             write_score_sheet(wb, district_name, district_rows)
 
-    other_rows = [
-        r for r in rows
-        if r.get("institution") and INSTITUTION_TO_DISTRICT.get(r.get("institution")) is None
-    ]
+    other_rows = [r for r in rows if r.get("institution") and INSTITUTION_TO_DISTRICT.get(r.get("institution")) is None]
     if other_rows:
         write_score_sheet(wb, "Прочие", other_rows)
 
@@ -833,16 +839,10 @@ async def export_to_max(session, chat_id, today_only=False, user_id=None):
 
         sheet_list = []
         for district_name in DISTRICTS_UNIVERSITIES:
-            count = sum(
-                1 for r in rows
-                if INSTITUTION_TO_DISTRICT.get(r.get("institution")) == district_name
-            )
+            count = sum(1 for r in rows if INSTITUTION_TO_DISTRICT.get(r.get("institution")) == district_name)
             if count:
                 sheet_list.append(f"  • «{district_name}» — {count} чел.")
-        other_rows = [
-            r for r in rows
-            if r.get("institution") and INSTITUTION_TO_DISTRICT.get(r.get("institution")) is None
-        ]
+        other_rows = [r for r in rows if r.get("institution") and INSTITUTION_TO_DISTRICT.get(r.get("institution")) is None]
         if other_rows:
             sheet_list.append(f"  • «Прочие» — {len(other_rows)} чел.")
         sheets_text = "\n".join(sheet_list) if sheet_list else ""
@@ -1019,110 +1019,152 @@ async def handle_message(session, chat_id, db_id, text, user_id=None):
     await advance_step(session, chat_id, db_id, step_index, user_id)
 
 # ----------------- ОБРАБОТКА СОБЫТИЙ -----------------
-async def main():
-    init_db()
-    log.info("=== MAX бот запускается ===")
-    log.info("Токен: %s...%s", MAX_TOKEN[:8], MAX_TOKEN[-4:])
-    log.info("Base URL: %s", BASE_URL)
+async def handle_update(session, update):
+    update_type = update.get("update_type", "")
+    log.info("=== Получено событие: %s ===", update_type)
+    log.debug("Полное событие: %s", json.dumps(update, ensure_ascii=False, indent=2))
 
-    bot_start_time = time.time()
-    log.info("Время старта: %s", time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(bot_start_time)))
+    if update_type == "bot_started":
+        chat = update.get("chat", {})
+        chat_id = chat.get("chat_id") if chat else None
+        user = update.get("user", {})
+        user_id = user.get("user_id") if user else None
 
-    certs_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "full_certs.pem")
-    if not os.path.exists(certs_path):
-        log.error("Файл full_certs.pem не найден по пути: %s", certs_path)
-        log.info("Использую стандартный certifi...")
-        ssl_context = ssl.create_default_context(cafile=certifi.where())
-    else:
-        log.info("Загружаю сертификаты из файла: %s", certs_path)
-        ssl_context = ssl.create_default_context(cafile=certs_path)
-        log.info("Сертификаты загружены успешно")
+        target = chat_id if chat_id else user_id
+        if not target:
+            log.error("bot_started: не найден ни chat_id, ни user_id!")
+            return
 
-    connector = aiohttp.TCPConnector(ssl=ssl_context)
+        await send_message(session, target, MESSAGES["welcome"], keyboard_type="start",
+                            user_id=user_id if not chat_id else None)
+        return
 
-    async with aiohttp.ClientSession(connector=connector) as session:
-        log.info("Удаляю webhook (DELETE /subscriptions)...")
+    if update_type == "message_created":
+        message = update.get("message", {})
+        body = message.get("body", {})
+        text = body.get("text", "").strip()
+
+        if not text:
+            log.warning("message_created: пустой текст")
+            return
+
+        recipient = message.get("recipient", {})
+        chat_id = recipient.get("chat_id")
+        sender = message.get("sender", {})
+        user_id = sender.get("user_id")
+
+        log.info("message_created: text=%r, chat_id=%s, user_id=%s", text[:80], chat_id, user_id)
+
+        target = chat_id if chat_id else user_id
+        if not target:
+            log.error("message_created: не найден ни chat_id, ни user_id!")
+            return
+
+        send_user_id = user_id if not chat_id else None
+        db_id = to_db_id(target)
+
         try:
-            async with session.delete(
-                f"{BASE_URL}/subscriptions",
-                headers={"Authorization": MAX_TOKEN}
-            ) as resp:
-                log.info("DELETE /subscriptions -> статус %s", resp.status)
-                resp_text = await resp.text()
-                log.info("Ответ: %s", resp_text)
+            await handle_message(session, target, db_id, text, user_id=send_user_id)
         except Exception as e:
-            log.error("Ошибка при удалении webhook: %s", e)
+            log.error("Ошибка обработки сообщения: %s", e, exc_info=True)
+        return
 
-        await asyncio.sleep(1)
+    log.info("Неизвестный тип события: %s", update_type)
 
-        log.info("Проверяю соединение (GET /me)...")
-        try:
-            async with session.get(
-                f"{BASE_URL}/me",
-                headers={"Authorization": MAX_TOKEN}
-            ) as resp:
-                log.info("GET /me -> статус %s", resp.status)
-                resp_text = await resp.text()
-                log.info("Ответ /me: %s", resp_text[:500])
-        except Exception as e:
-            log.error("Ошибка GET /me: %s", e)
+# ----------------- ОБРАБОТКА НЕПРОЧИТАННЫХ ПРИ ЗАПУСКЕ -----------------
+async def process_unread_on_startup(session, old_updates, bot_user_id):
+    """
+    При запуске обрабатывает только те старые сообщения, на которые бот ещё не ответил.
+    Для каждого уникального chat_id берёт историю через GET /messages и проверяет:
+    если последнее сообщение от бота — пропускаем (уже ответили).
+    Если от пользователя — обрабатываем.
+    """
+    if not old_updates:
+        log.info("Старых обновлений нет.")
+        return
 
-        log.info("=== Polling запущен. Ожидание сообщений... ===")
+    # Группируем по chat_id, берём последнее сообщение от пользователя из старых апдейтов
+    chat_last_msg = {}  # chat_id -> (text, user_id_for_send)
 
-        marker = None
-        poll_count = 0
-        old_updates_buffer = []
+    for update in old_updates:
+        update_type = update.get("update_type", "")
 
-        while True:
-            try:
-                poll_count += 1
-                data = await api_get_updates(session, marker)
+        if update_type == "bot_started":
+            chat = update.get("chat", {})
+            chat_id = chat.get("chat_id") if chat else None
+            user = update.get("user", {})
+            user_id = user.get("user_id") if user else None
+            target = chat_id if chat_id else user_id
+            if target:
+                chat_last_msg[target] = ("__bot_started__", user_id if not chat_id else None)
+            continue
 
-                new_marker = data.get("marker")
-                if new_marker is not None:
-                    marker = new_marker
-
-                updates = data.get("updates", [])
-
-                if poll_count % 10 == 0:
-                    log.info("Poll #%d: получено %d обновлений, marker=%s, буфер старых: %d",
-                             poll_count, len(updates), marker, len(old_updates_buffer))
-
-                if updates:
-                    log.info("Получено %d обновлений", len(updates))
-
-                # Разделяем: свежие vs старые
-                fresh_updates = []
-                for update in updates:
-                    ts = update.get("timestamp")
-                    if ts and ts < bot_start_time:
-                        old_updates_buffer.append(update)
-                    else:
-                        fresh_updates.append(update)
-
-                # Сначала обрабатываем свежие
-                for update in fresh_updates:
-                    try:
-                        await handle_update(session, update)
-                    except Exception as e:
-                        log.error("Ошибка обработки update: %s", e, exc_info=True)
-
-                # Если свежих не было — разбираем буфер старых
-                if not fresh_updates and old_updates_buffer:
-                    log.info("Свежих нет. Обрабатываю буфер старых обновлений: %d шт.", len(old_updates_buffer))
-                    buffer = old_updates_buffer[:]
-                    old_updates_buffer.clear()
-                    for update in buffer:
-                        try:
-                            await handle_update(session, update)
-                        except Exception as e:
-                            log.error("Ошибка обработки старого update: %s", e, exc_info=True)
-
-            except asyncio.TimeoutError:
+        if update_type == "message_created":
+            message = update.get("message", {})
+            body = message.get("body", {})
+            text = body.get("text", "").strip()
+            if not text:
                 continue
+            recipient = message.get("recipient", {})
+            chat_id = recipient.get("chat_id")
+            sender = message.get("sender", {})
+            user_id = sender.get("user_id")
+            target = chat_id if chat_id else user_id
+            if target:
+                send_user_id = user_id if not chat_id else None
+                chat_last_msg[target] = (text, send_user_id)
+            continue
+
+    if not chat_last_msg:
+        log.info("Нет сообщений для проверки.")
+        return
+
+    processed = 0
+    skipped = 0
+
+    for target, (text, send_user_id) in chat_last_msg.items():
+        # bot_started — всегда показываем приветствие
+        if text == "__bot_started__":
+            log.info("Обрабатываю bot_started для %s", target)
+            db_id = to_db_id(target)
+            try:
+                await send_message(session, target, MESSAGES["welcome"], keyboard_type="start",
+                                   user_id=send_user_id)
+                processed += 1
             except Exception as e:
-                log.error("Ошибка polling: %s", e)
-                await asyncio.sleep(5)
+                log.error("Ошибка обработки bot_started: %s", e)
+            await asyncio.sleep(0.3)
+            continue
+
+        # Для message_created — проверяем историю чата
+        if bot_user_id:
+            messages = await api_get_chat_messages(session, target, count=5)
+            if messages:
+                # Сообщения идут от новых к старым — первое самое свежее
+                last_msg = messages[0]
+                # Проверяем, от кого последнее сообщение
+                # В GET /messages ответе поле может называться "from" или "sender"
+                from_obj = last_msg.get("from") or last_msg.get("sender") or {}
+                from_user_id = from_obj.get("user_id")
+
+                if from_user_id == bot_user_id:
+                    # Последнее сообщение от бота — уже ответили, пропускаем
+                    log.info("Чат %s: последнее сообщение от бота — пропускаю", target)
+                    skipped += 1
+                    continue
+
+        # Если не удалось получить историю или последнее сообщение от пользователя — обрабатываем
+        log.info("Чат %s: последнее сообщение от пользователя — обрабатываю", target)
+        db_id = to_db_id(target)
+        try:
+            await handle_message(session, target, db_id, text, user_id=send_user_id)
+            processed += 1
+        except Exception as e:
+            log.error("Ошибка обработки старого сообщения для %s: %s", target, e)
+
+        await asyncio.sleep(0.3)
+
+    log.info("Обработано при запуске: %d, пропущено (бот уже ответил): %d", processed, skipped)
 
 # ----------------- ЗАПУСК -----------------
 async def main():
@@ -1147,6 +1189,7 @@ async def main():
     connector = aiohttp.TCPConnector(ssl=ssl_context)
 
     async with aiohttp.ClientSession(connector=connector) as session:
+        # Удаляем webhook
         log.info("Удаляю webhook (DELETE /subscriptions)...")
         try:
             async with session.delete(
@@ -1161,24 +1204,43 @@ async def main():
 
         await asyncio.sleep(1)
 
-        log.info("Проверяю соединение (GET /me)...")
-        try:
-            async with session.get(
-                f"{BASE_URL}/me",
-                headers={"Authorization": MAX_TOKEN}
-            ) as resp:
-                log.info("GET /me -> статус %s", resp.status)
-                resp_text = await resp.text()
-                log.info("Ответ /me: %s", resp_text[:500])
-        except Exception as e:
-            log.error("Ошибка GET /me: %s", e)
+        # Получаем user_id бота для проверки авторства сообщений
+        log.info("Получаю информацию о боте (GET /me)...")
+        bot_user_id = await api_get_bot_info(session)
+
+        # Собираем все накопленные обновления при старте
+        log.info("=== Собираю накопленные обновления ===")
+        marker = None
+        old_updates = []
+
+        # Делаем несколько запросов чтобы выкачать все накопленные апдейты
+        for _ in range(10):
+            data = await api_get_updates(session, marker)
+            new_marker = data.get("marker")
+            if new_marker is not None:
+                marker = new_marker
+            updates = data.get("updates", [])
+            if not updates:
+                break
+            for update in updates:
+                ts = update.get("timestamp")
+                if ts and ts < bot_start_time:
+                    old_updates.append(update)
+                # Если есть свежие среди первой пачки — тоже сохраняем
+            if len(updates) < 100:
+                break
+            await asyncio.sleep(0.2)
+
+        log.info("Собрано старых обновлений: %d", len(old_updates))
+
+        # Обрабатываем только те, на которые бот ещё не ответил
+        if old_updates:
+            log.info("Проверяю непрочитанные диалоги...")
+            await process_unread_on_startup(session, old_updates, bot_user_id)
 
         log.info("=== Polling запущен. Ожидание сообщений... ===")
 
-        marker = None
         poll_count = 0
-        old_updates_buffer = []
-
         while True:
             try:
                 poll_count += 1
@@ -1191,38 +1253,17 @@ async def main():
                 updates = data.get("updates", [])
 
                 if poll_count % 10 == 0:
-                    log.info("Poll #%d: получено %d обновлений, marker=%s, буфер старых: %d",
-                             poll_count, len(updates), marker, len(old_updates_buffer))
+                    log.info("Poll #%d: получено %d обновлений, marker=%s",
+                             poll_count, len(updates), marker)
 
                 if updates:
                     log.info("Получено %d обновлений", len(updates))
 
-                # Разделяем: свежие vs старые
-                fresh_updates = []
                 for update in updates:
-                    ts = update.get("timestamp")
-                    if ts and ts < bot_start_time:
-                        old_updates_buffer.append(update)
-                    else:
-                        fresh_updates.append(update)
-
-                # Сначала обрабатываем свежие
-                for update in fresh_updates:
                     try:
                         await handle_update(session, update)
                     except Exception as e:
                         log.error("Ошибка обработки update: %s", e, exc_info=True)
-
-                # Если свежих не было — разбираем буфер старых
-                if not fresh_updates and old_updates_buffer:
-                    log.info("Свежих нет. Обрабатываю буфер старых обновлений: %d шт.", len(old_updates_buffer))
-                    buffer = old_updates_buffer[:]
-                    old_updates_buffer.clear()
-                    for update in buffer:
-                        try:
-                            await handle_update(session, update)
-                        except Exception as e:
-                            log.error("Ошибка обработки старого update: %s", e, exc_info=True)
 
             except asyncio.TimeoutError:
                 continue
