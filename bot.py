@@ -56,7 +56,6 @@ def init_db():
         )
     """)
     c.execute("ALTER TABLE answers ADD COLUMN IF NOT EXISTS consent_status BOOLEAN DEFAULT FALSE")
-    # Добавляем колонку created_at для отслеживания времени заполнения
     c.execute("ALTER TABLE answers ADD COLUMN IF NOT EXISTS created_at TIMESTAMP")
     c.execute("""
         CREATE TABLE IF NOT EXISTS progress (
@@ -561,7 +560,6 @@ async def ask_step(session, chat_id, db_id, step_key, uni_page=0, user_id=None):
 async def advance_step(session, chat_id, db_id, step_index, user_id=None):
     next_idx = step_index + 1
     if next_idx >= len(STEPS):
-        # Анкета завершена — записываем время завершения
         conn = get_db()
         c = conn.cursor()
         c.execute(
@@ -677,12 +675,6 @@ def calculate_scores(row):
 
 # ----------------- ВЫГРУЗКА -----------------
 def generate_xlsx(today_only=False):
-    """
-    Генерация Excel-файла с выгрузкой анкет.
-    today_only=True — только анкеты, заполненные сегодня.
-    Сортировка по created_at (старые сверху, новые внизу).
-    Возвращает (путь_к_файлу, rows) или (None, None) если данных нет.
-    """
     conn = get_db()
     c = conn.cursor(cursor_factory=RealDictCursor)
 
@@ -706,7 +698,6 @@ def generate_xlsx(today_only=False):
 
     wb = Workbook()
 
-    # ===== ЛИСТ 1: "Анкеты" — все данные, отсортированные по времени =====
     ws = wb.active
     ws.title = "Анкеты"
 
@@ -732,7 +723,6 @@ def generate_xlsx(today_only=False):
         ))
         ws.column_dimensions[ws.cell(row=1, column=col_idx).column_letter].width = min(max_len + 2, 50)
 
-    # ===== ЛИСТЫ ПО РАЙОНАМ (ФИО, вуз, контакты, баллы) =====
     bold_font = Font(bold=True)
     total_fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
 
@@ -766,7 +756,6 @@ def generate_xlsx(today_only=False):
             cell.font = header_font
             cell.alignment = Alignment(horizontal="center")
 
-        # Сортируем по created_at внутри района
         sorted_rows = sorted(
             sheet_rows,
             key=lambda r: r.get("created_at") or datetime.min
@@ -840,7 +829,6 @@ async def export_to_max(session, chat_id, today_only=False, user_id=None):
         file_token = result["token"]
         attachments = [{"type": "file", "payload": {"token": file_token}}]
 
-        # Формируем сообщение с описанием листов
         sheet_list = []
         for district_name in DISTRICTS_UNIVERSITIES:
             count = sum(
@@ -1029,8 +1017,15 @@ async def handle_message(session, chat_id, db_id, text, user_id=None):
     await advance_step(session, chat_id, db_id, step_index, user_id)
 
 # ----------------- ОБРАБОТКА СОБЫТИЙ -----------------
-async def handle_update(session, update):
+async def handle_update(session, update, bot_start_time):
     update_type = update.get("update_type", "")
+
+    # Пропускаем обновления, пришедшие ДО старта бота
+    update_timestamp = update.get("timestamp")
+    if update_timestamp and update_timestamp < bot_start_time:
+        log.debug("Пропускаю старое обновление: type=%s, ts=%s", update_type, update_timestamp)
+        return
+
     log.info("=== Получено событие: %s ===", update_type)
     log.debug("Полное событие: %s", json.dumps(update, ensure_ascii=False, indent=2))
 
@@ -1099,6 +1094,9 @@ async def main():
     log.info("Токен: %s...%s", MAX_TOKEN[:8], MAX_TOKEN[-4:])
     log.info("Base URL: %s", BASE_URL)
 
+    bot_start_time = time.time()
+    log.info("Время старта: %s", datetime.fromtimestamp(bot_start_time).strftime('%Y-%m-%d %H:%M:%S'))
+
     certs_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "full_certs.pem")
     if not os.path.exists(certs_path):
         log.error("Файл full_certs.pem не найден по пути: %s", certs_path)
@@ -1162,7 +1160,7 @@ async def main():
 
                 for update in updates:
                     try:
-                        await handle_update(session, update)
+                        await handle_update(session, update, bot_start_time)
                     except Exception as e:
                         log.error("Ошибка обработки update: %s", e, exc_info=True)
 
