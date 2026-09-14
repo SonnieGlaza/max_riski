@@ -56,6 +56,8 @@ def init_db():
         )
     """)
     c.execute("ALTER TABLE answers ADD COLUMN IF NOT EXISTS consent_status BOOLEAN DEFAULT FALSE")
+    # Добавляем колонку created_at для отслеживания времени заполнения
+    c.execute("ALTER TABLE answers ADD COLUMN IF NOT EXISTS created_at TIMESTAMP")
     c.execute("""
         CREATE TABLE IF NOT EXISTS progress (
             user_id BIGINT PRIMARY KEY,
@@ -99,6 +101,27 @@ def save_answer(db_id, field, value):
     c.execute(f"UPDATE answers SET {field}=%s WHERE user_id=%s", (value, db_id))
     conn.commit()
     conn.close()
+
+def check_answered(db_id, step_key):
+    """Проверяет, ответил ли пользователь на текущий шаг."""
+    conn = get_db()
+    c = conn.cursor()
+    if step_key == "consent":
+        c.execute("SELECT consent_status FROM answers WHERE user_id=%s", (db_id,))
+        row = c.fetchone()
+        conn.close()
+        return row is not None and row[0] is True
+    elif step_key == "fio":
+        c.execute("SELECT fio FROM answers WHERE user_id=%s", (db_id,))
+        row = c.fetchone()
+        conn.close()
+        return row is not None and row[0]
+    else:
+        field = STEP_TO_DB.get(step_key, step_key)
+        c.execute(f"SELECT {field} FROM answers WHERE user_id=%s", (db_id,))
+        row = c.fetchone()
+        conn.close()
+        return row is not None and row[0]
 
 # ----------------- ВУЗы -----------------
 UNIVERSITIES = [
@@ -152,6 +175,85 @@ UNIVERSITIES = [
     "Сарапульский техникум машиностроения и информационных технологий"
 ]
 ITEMS_PER_PAGE = 10
+
+# ----------------- РАЙОНЫ УДМУРТИИ -----------------
+DISTRICTS_UNIVERSITIES = {
+    "Ижевск": [
+        "БПОУ УР «Ижевский торгово-экономический техникум»",
+        "БПОУ УР «Ижевский монтажный техникум»",
+        "БПОУ «Ижевский агростроительный техникум»",
+        "ЧПОО «Нефтяной техникум»",
+        "БПОУ УР «Ижевский политехнический колледж»",
+        "БПОУ УР «Ижевский промышленно-экономический колледж»",
+        "БПОУ УР «Ижевский машиностроительный техникум им. С.Н. Борина»",
+        "БПОУ УР «Радиомеханический техникум имени В.А. Шутова»",
+        "АПОУ УР «Экономико-технологический колледж»",
+        "АПОУ УР «Топливно-энергетический колледж»",
+        "БПОУ УР «Ижевский техникум индустрии питания»",
+        "КПОУ УР «Удмуртский республиканский колледж культуры»",
+        "АНПОО «Международный Восточно-Европейский колледж»",
+        "АПОУ УР «Техникум радиоэлектроники и информационных технологий им. А.В. Воскресенского»",
+        "АПОУ УР «Республиканский медицинский колледж имени Героя Советского Союза Ф.А. Пушиной Министерства здравоохранения Удмуртской Республики»",
+        "ПОЧУ «Ижевский техникум экономики, управления и права Удмуртпотребсоюза»",
+        "АНПОО СПО «Ижевский финансово-юридический колледж»",
+        "БПОУ УР «Удмуртский республиканский социально-педагогический колледж»",
+        "АПОУ УР «Строительный техникум»",
+        "ФГБОУ ВО «Ижевская государственная медицинская академия»",
+        "КПОУ УР «Республиканский музыкальный колледж»",
+        "ФГБОУ ВО «Приволжский государственный университет путей сообщения»",
+        "БПОУ УР «Ижевский индустриальный техникум имени Евгения Фёдоровича Драгунова»",
+        "Министерство юстиции Российской Федерации",
+        "ФГБОУ ВО «Удмуртский государственный университет»",
+        "ФГБОУ ВО «Удмуртский государственный аграрный университет»",
+        "ФГБОУ ВО «Ижевский государственный технический университет имени М.Т. Калашникова»",
+        "БПОУ УР «Ижевский автотранспортный техникум»",
+    ],
+    "Воткинск": [
+        "БПОУ УР «Воткинский промышленный техникум»",
+        "БПОУ УР «Воткинский музыкально-педагогический колледж имени П.И. Чайковского»",
+        "БПОУ УР «Воткинский машиностроительный техникум имени В.Г.Садовникова»",
+    ],
+    "Глазов": [
+        "АПОУ УР «Глазовский аграрно-промышленный техникум»",
+        "БПОУ УР «Глазовский технический колледж»",
+        "БПОУ УР «Глазовский политехнический колледж»",
+        "ФГБОУ ВО «Глазовский государственный инженерно-педагогический университет имени В. Г. Корененко»",
+    ],
+    "Можга": [
+        "БПОУ УР «Ижевский промышленно-экономический колледж» в г. Можга",
+        "БПОУ УР «Можгинский педагогический колледж имени Т.К. Борисова»",
+        "БПОУ УР «Можгинский агропромышленный колледж»",
+    ],
+    "Сарапул": [
+        "БПОУ УР «Сарапульский политехнический техникум»",
+        "БПОУ УР «Сарапульский многопрофильный колледж»",
+        "БПОУ УР «Сарапульский колледж социально-педагогических технологий и сервиса»",
+        "Сарапульский техникум машиностроения и информационных технологий",
+    ],
+    "Алнаши": [
+        "БПОУ УР «Асановский аграрно-технический техникум»",
+    ],
+    "Дебесы": [
+        "БПОУ «Дебесский политехникум»",
+    ],
+    "Игра": [
+        "БПОУР «Игринский политехнический техникум»",
+    ],
+    "Сюмси": [
+        "БПОУ УР «Сюмсинский техникум лесного и сельского хозяйства»",
+    ],
+    "Ува": [
+        "БПОУ УР «Увинский профессиональный колледж»",
+    ],
+    "Яр": [
+        "БПОУ УР «Ярский политехникум»",
+    ],
+}
+
+INSTITUTION_TO_DISTRICT = {}
+for _district, _unis in DISTRICTS_UNIVERSITIES.items():
+    for _uni in _unis:
+        INSTITUTION_TO_DISTRICT[_uni] = _district
 
 # ----------------- ШАГИ АНКЕТЫ -----------------
 STEPS = [
@@ -289,6 +391,7 @@ MESSAGES = {
     "invalid_number": "Пожалуйста, введите номер от 1 до {}.",
     "invalid_multi": "Пожалуйста, укажите номера вариантов через запятую (например: 1, 3, 5). Проверьте, что номера от 1 до {}.",
     "no_data": "Пока нет собранных анкет для выгрузки.",
+    "no_data_today": "Сегодня пока нет новых анкет для выгрузки.",
     "admin_only": "Эта команда доступна только администраторам.",
     "finished": (
         "✅ Спасибо! Анкета заполнена.\n\n"
@@ -310,7 +413,10 @@ EXPORT_HEADERS = {
     "events": "Участие в мероприятиях", "resume_status": "Наличие резюме",
     "interview_training": "Тренинги по собеседованию", "special_status": "Особый статус",
     "military": "Призыв на военную службу", "maternity": "Отпуск по уходу за ребёнком",
-    "graduate": "Выпускной курс", "post_plans": "Планы после выпуска", "help_needed": "Нужная помощь"
+    "graduate": "Выпускной курс", "post_plans": "Планы после выпуска",
+    "help_needed": "Нужная помощь",
+    "consent_status": "Согласие на обработку ПД",
+    "created_at": "Дата заполнения",
 }
 
 # ----------------- КЛАВИАТУРЫ -----------------
@@ -454,6 +560,16 @@ async def ask_step(session, chat_id, db_id, step_key, uni_page=0, user_id=None):
 async def advance_step(session, chat_id, db_id, step_index, user_id=None):
     next_idx = step_index + 1
     if next_idx >= len(STEPS):
+        # Анкета завершена — записываем время завершения
+        conn = get_db()
+        c = conn.cursor()
+        c.execute(
+            "UPDATE answers SET created_at=%s WHERE user_id=%s",
+            (datetime.now(), db_id)
+        )
+        conn.commit()
+        conn.close()
+
         set_progress(db_id, next_idx, 0, 2)
         await send_message(session, chat_id, MESSAGES["finished"], keyboard_type="restart", user_id=user_id)
     else:
@@ -493,52 +609,268 @@ def parse_multi_numbers(text, max_val):
     except ValueError:
         return None
 
+# ----------------- ПОДСЧЁТ БАЛЛОВ -----------------
+def calculate_scores(row):
+    scores = {}
+
+    emp = (row.get("employment_status") or "").lower()
+    if "трудовому договору" in emp:
+        scores["employment"] = 0
+    elif any(k in emp for k in ["гражданско-правовому", "самозанят", "стажировк", "временно"]):
+        scores["employment"] = 0
+    elif "ничего из вышеперечисленного" in emp:
+        scores["employment"] = 1
+
+    tc = (row.get("target_contract") or "").lower()
+    if "да" in tc and "нет" not in tc:
+        scores["target_contract"] = 0
+    elif "нет" in tc:
+        scores["target_contract"] = 2
+
+    exp = (row.get("experience") or "").lower()
+    if "да, есть опыт" in exp:
+        scores["experience"] = 0
+    elif "вне специальности" in exp:
+        scores["experience"] = 3
+    elif "нет, опыта" in exp:
+        scores["experience"] = 3
+
+    pe = (row.get("practice_eval") or "").lower()
+    if "не доволен" in pe or "недоволен" in pe:
+        scores["practice_eval"] = 2
+    elif "доволен" in pe:
+        scores["practice_eval"] = 0
+
+    ev = (row.get("events") or "").lower()
+    if "за последний год" in ev:
+        scores["events"] = 0
+    elif "более года назад" in ev or "ни разу" in ev:
+        scores["events"] = 2
+
+    rs = (row.get("resume_status") or "").lower()
+    if "актуальное" in rs:
+        scores["resume"] = 0
+    elif "устарело" in rs or "не составлял" in rs:
+        scores["resume"] = 1
+
+    it = (row.get("interview_training") or "").lower()
+    if "да" in it and "не проходил" not in it:
+        scores["interview"] = 1
+    elif "не проходил" in it:
+        scores["interview"] = 0
+
+    ss = (row.get("special_status") or "").lower()
+    if "ничего из вышеперечисленного" in ss:
+        scores["special_status"] = 0
+    elif ss:
+        scores["special_status"] = 1
+
+    mil = (row.get("military") or "").lower()
+    if "да, планируется" in mil:
+        scores["military"] = 1
+    elif "нет" in mil or "не подлежу" in mil:
+        scores["military"] = 0
+
+    total = sum(v for v in scores.values())
+    return scores, total
+
 # ----------------- ВЫГРУЗКА -----------------
-def generate_xlsx():
+def generate_xlsx(today_only=False):
+    """
+    Генерация Excel-файла с выгрузкой анкет.
+    today_only=True — только анкеты, заполненные сегодня.
+    Сортировка по created_at (старые сверху, новые внизу).
+    Возвращает (путь_к_файлу, rows) или (None, None) если данных нет.
+    """
     conn = get_db()
     c = conn.cursor(cursor_factory=RealDictCursor)
-    c.execute("SELECT * FROM answers")
+
+    if today_only:
+        today = date.today()
+        c.execute(
+            "SELECT * FROM answers WHERE created_at::date = %s ORDER BY created_at ASC",
+            (today,)
+        )
+    else:
+        c.execute("SELECT * FROM answers ORDER BY created_at ASC NULLS FIRST")
+
     rows = c.fetchall()
     conn.close()
+
     if not rows:
         return None, None
+
     from openpyxl import Workbook
-    from openpyxl.styles import Font, Alignment
+    from openpyxl.styles import Font, Alignment, PatternFill
+
     wb = Workbook()
+
+    # ===== ЛИСТ 1: "Анкеты" — все данные, отсортированные по времени =====
     ws = wb.active
     ws.title = "Анкеты"
+
     cols = list(rows[0].keys())
     header_font = Font(bold=True)
+
     for col_idx, col_name in enumerate(cols, start=1):
         cell = ws.cell(row=1, column=col_idx, value=EXPORT_HEADERS.get(col_name, col_name))
         cell.font = header_font
         cell.alignment = Alignment(horizontal="center")
+
     for row_idx, r in enumerate(rows, start=2):
         for col_idx, col_name in enumerate(cols, start=1):
             val = r[col_name]
+            if col_name == "created_at" and val is not None:
+                val = val.strftime("%Y-%m-%d %H:%M")
             ws.cell(row=row_idx, column=col_idx, value=val if val is not None else "")
+
     for col_idx, col_name in enumerate(cols, start=1):
         display_name = EXPORT_HEADERS.get(col_name, col_name)
         max_len = max(len(str(display_name)), max(
             (len(str(r[col_name])) if r[col_name] else 0) for r in rows
         ))
         ws.column_dimensions[ws.cell(row=1, column=col_idx).column_letter].width = min(max_len + 2, 50)
+
+    # ===== ЛИСТЫ ПО РАЙОНАМ (ФИО, вуз, контакты, баллы) =====
+    bold_font = Font(bold=True)
+    total_fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
+
+    district_headers = [
+        "ФИО",
+        "Учебное заведение",
+        "Контакты",
+        "Статус занятости",
+        "Целевой договор",
+        "Опыт работы",
+        "Оценка практик",
+        "Мероприятия",
+        "Резюме",
+        "Собеседование",
+        "Особый статус",
+        "Военный призыв",
+        "Сумма баллов",
+    ]
+
+    score_keys = [
+        "employment", "target_contract", "experience",
+        "practice_eval", "events", "resume",
+        "interview", "special_status", "military",
+    ]
+
+    def write_score_sheet(workbook, sheet_name, sheet_rows):
+        ws2 = workbook.create_sheet(title=sheet_name)
+
+        for col_idx, h in enumerate(district_headers, start=1):
+            cell = ws2.cell(row=1, column=col_idx, value=h)
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="center")
+
+        # Сортируем по created_at внутри района
+        sorted_rows = sorted(
+            sheet_rows,
+            key=lambda r: r.get("created_at") or datetime.min
+        )
+
+        row_idx = 2
+        for r in sorted_rows:
+            scores, total = calculate_scores(dict(r))
+
+            ws2.cell(row=row_idx, column=1, value=r.get("fio") or "")
+            ws2.cell(row=row_idx, column=2, value=r.get("institution") or "")
+            ws2.cell(row=row_idx, column=3, value=r.get("contacts") or "")
+
+            for i, key in enumerate(score_keys, start=4):
+                val = scores.get(key)
+                ws2.cell(row=row_idx, column=i, value=val if val is not None else "")
+
+            total_cell = ws2.cell(row=row_idx, column=13, value=total)
+            total_cell.font = bold_font
+            total_cell.fill = total_fill
+
+            row_idx += 1
+
+        for col_idx in range(1, len(district_headers) + 1):
+            col_letter = ws2.cell(row=1, column=col_idx).column_letter
+            max_len = len(district_headers[col_idx - 1])
+            for r_idx in range(2, row_idx):
+                val = ws2.cell(row=r_idx, column=col_idx).value
+                if val is not None:
+                    max_len = max(max_len, len(str(val)))
+            ws2.column_dimensions[col_letter].width = min(max_len + 2, 50)
+
+    for district_name in DISTRICTS_UNIVERSITIES:
+        district_rows = [
+            r for r in rows
+            if INSTITUTION_TO_DISTRICT.get(r.get("institution")) == district_name
+        ]
+        if district_rows:
+            write_score_sheet(wb, district_name, district_rows)
+
+    other_rows = [
+        r for r in rows
+        if r.get("institution") and INSTITUTION_TO_DISTRICT.get(r.get("institution")) is None
+    ]
+    if other_rows:
+        write_score_sheet(wb, "Прочие", other_rows)
+
     fname = "survey_export_max.xlsx"
     wb.save(fname)
     return fname, rows
 
-async def export_to_max(session, chat_id, user_id=None):
-    fname, rows = generate_xlsx()
+async def export_to_max(session, chat_id, today_only=False, user_id=None):
+    fname, rows = generate_xlsx(today_only=today_only)
+
     if not rows:
-        await send_message(session, chat_id, MESSAGES["no_data"], user_id=user_id)
+        if today_only:
+            await send_message(session, chat_id, MESSAGES["no_data_today"], user_id=user_id)
+        else:
+            await send_message(session, chat_id, MESSAGES["no_data"], user_id=user_id)
         return
+
     try:
-        result = await api_upload_file(session, fname, "survey_export.xlsx")
+        if today_only:
+            file_title = f"Выгрузка за {date.today().strftime('%d.%m.%Y')}.xlsx"
+        else:
+            file_title = "Выгрузка анкет.xlsx"
+
+        result = await api_upload_file(session, fname, file_title)
         if "token" not in result:
             raise Exception(f"Нет token в ответе: {result}")
         file_token = result["token"]
         attachments = [{"type": "file", "payload": {"token": file_token}}]
-        await api_send_message(session, chat_id, "📊 Вот выгрузка анкет в Excel:", attachments, user_id)
+
+        # Формируем сообщение с описанием листов
+        sheet_list = []
+        for district_name in DISTRICTS_UNIVERSITIES:
+            count = sum(
+                1 for r in rows
+                if INSTITUTION_TO_DISTRICT.get(r.get("institution")) == district_name
+            )
+            if count:
+                sheet_list.append(f"  • «{district_name}» — {count} чел.")
+        other_rows = [
+            r for r in rows
+            if r.get("institution") and INSTITUTION_TO_DISTRICT.get(r.get("institution")) is None
+        ]
+        if other_rows:
+            sheet_list.append(f"  • «Прочие» — {len(other_rows)} чел.")
+        sheets_text = "\n".join(sheet_list) if sheet_list else ""
+
+        if today_only:
+            header = f"📊 Выгрузка анкет за сегодня ({date.today().strftime('%d.%m.%Y')}):\n\n"
+        else:
+            header = "📊 Вот полная выгрузка анкет:\n\n"
+
+        msg = (
+            f"{header}"
+            "• Лист «Анкеты» — полные ответы, отсортированы по времени (новые внизу)\n"
+            "• Листы по районам — ФИО, учебное заведение, контакты, баллы и сумма:\n\n"
+            f"{sheets_text}\n\n"
+            f"Всего анкет: {len(rows)}"
+        )
+
+        await api_send_message(session, chat_id, msg, attachments, user_id)
+
     except Exception as e:
         log.error("Ошибка загрузки .xlsx: %s", e)
         try:
@@ -562,8 +894,8 @@ async def export_to_max(session, chat_id, user_id=None):
                 if current:
                     chunks.append(current)
                 for i, chunk in enumerate(chunks):
-                    header = f"📊 Выгрузка анкет (часть {i+1}/{len(chunks)}):\n\n"
-                    await send_message(session, chat_id, header + chunk, user_id=user_id)
+                    header_part = f"📊 Выгрузка анкет (часть {i+1}/{len(chunks)}):\n\n"
+                    await send_message(session, chat_id, header_part + chunk, user_id=user_id)
             else:
                 await send_message(session, chat_id, "📊 Выгрузка анкет (CSV):\n\n" + csv_text, user_id=user_id)
         except Exception as e2:
@@ -576,14 +908,23 @@ async def export_to_max(session, chat_id, user_id=None):
 async def handle_message(session, chat_id, db_id, text, user_id=None):
     log.info("handle_message: chat_id=%s, db_id=%s, text=%r", chat_id, db_id, text[:50])
 
-    if text.lower() in ["/export", "/выгрузить"]:
+    text_lower = text.lower()
+
+    if text_lower in ["/export", "/выгрузить"]:
         if abs(db_id) in ADMIN_IDS:
-            await export_to_max(session, chat_id, user_id)
+            await export_to_max(session, chat_id, today_only=False, user_id=user_id)
         else:
             await send_message(session, chat_id, MESSAGES["admin_only"], user_id=user_id)
         return
 
-    if text.lower() == "/restart":
+    if text_lower in ["/export today", "/выгрузить сегодня", "/выгрузить_сегодня"]:
+        if abs(db_id) in ADMIN_IDS:
+            await export_to_max(session, chat_id, today_only=True, user_id=user_id)
+        else:
+            await send_message(session, chat_id, MESSAGES["admin_only"], user_id=user_id)
+        return
+
+    if text_lower == "/restart":
         set_progress(db_id, 0, 0, 0)
         await send_message(session, chat_id, "Анкета сброшена. Нажмите «Начать анкету».", keyboard_type="start", user_id=user_id)
         return
@@ -757,7 +1098,6 @@ async def main():
     log.info("Токен: %s...%s", MAX_TOKEN[:8], MAX_TOKEN[-4:])
     log.info("Base URL: %s", BASE_URL)
 
-    # <-- ИСПОЛЬЗУЕМ ЛОКАЛЬНЫЙ ФАЙЛ full_certs.pem ВМЕСТО СКАЧИВАНИЯ -->
     certs_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "full_certs.pem")
     if not os.path.exists(certs_path):
         log.error("Файл full_certs.pem не найден по пути: %s", certs_path)
@@ -771,7 +1111,6 @@ async def main():
     connector = aiohttp.TCPConnector(ssl=ssl_context)
 
     async with aiohttp.ClientSession(connector=connector) as session:
-        # Удаляем webhook с подробным логированием
         log.info("Удаляю webhook (DELETE /subscriptions)...")
         try:
             async with session.delete(
@@ -786,7 +1125,6 @@ async def main():
 
         await asyncio.sleep(1)
 
-        # Проверяем соединение запросом /me
         log.info("Проверяю соединение (GET /me)...")
         try:
             async with session.get(
