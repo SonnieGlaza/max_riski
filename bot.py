@@ -1017,77 +1017,6 @@ async def handle_message(session, chat_id, db_id, text, user_id=None):
     await advance_step(session, chat_id, db_id, step_index, user_id)
 
 # ----------------- ОБРАБОТКА СОБЫТИЙ -----------------
-async def handle_update(session, update, bot_start_time):
-    update_type = update.get("update_type", "")
-
-    # Пропускаем обновления, пришедшие ДО старта бота
-    update_timestamp = update.get("timestamp")
-    if update_timestamp and update_timestamp < bot_start_time:
-        log.debug("Пропускаю старое обновление: type=%s, ts=%s", update_type, update_timestamp)
-        return
-
-    log.info("=== Получено событие: %s ===", update_type)
-    log.debug("Полное событие: %s", json.dumps(update, ensure_ascii=False, indent=2))
-
-    if update_type == "bot_started":
-        chat_id = None
-        user_id = None
-
-        chat = update.get("chat", {})
-        if chat:
-            chat_id = chat.get("chat_id")
-            chat_type = chat.get("type", "")
-            log.info("bot_started: chat_id=%s, chat_type=%s", chat_id, chat_type)
-
-        user = update.get("user", {})
-        if user:
-            user_id = user.get("user_id")
-            log.info("bot_started: user_id=%s", user_id)
-
-        target = chat_id if chat_id else user_id
-        if not target:
-            log.error("bot_started: не найден ни chat_id, ни user_id!")
-            return
-
-        db_id = to_db_id(target)
-        await send_message(session, target, MESSAGES["welcome"], keyboard_type="start", user_id=user_id if not chat_id else None)
-        return
-
-    if update_type == "message_created":
-        message = update.get("message", {})
-        body = message.get("body", {})
-        text = body.get("text", "").strip()
-
-        if not text:
-            log.warning("message_created: пустой текст")
-            return
-
-        recipient = message.get("recipient", {})
-        chat_id = recipient.get("chat_id")
-        chat_type = recipient.get("chat_type", "")
-
-        sender = message.get("sender", {})
-        user_id = sender.get("user_id")
-
-        log.info("message_created: text=%r, chat_id=%s, chat_type=%s, user_id=%s", text[:80], chat_id, chat_type, user_id)
-
-        target = chat_id if chat_id else user_id
-        if not target:
-            log.error("message_created: не найден ни chat_id, ни user_id!")
-            return
-
-        send_user_id = user_id if not chat_id else None
-
-        db_id = to_db_id(target)
-        try:
-            await handle_message(session, target, db_id, text, user_id=send_user_id)
-        except Exception as e:
-            log.error("Ошибка обработки сообщения: %s", e, exc_info=True)
-        return
-
-    log.info("Неизвестный тип события: %s", update_type)
-
-# ----------------- ЗАПУСК -----------------
 async def main():
     init_db()
     log.info("=== MAX бот запускается ===")
@@ -1095,7 +1024,7 @@ async def main():
     log.info("Base URL: %s", BASE_URL)
 
     bot_start_time = time.time()
-    log.info("Бот запущен. Время старта: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(bot_start_time))}")
+    log.info("Время старта: %s", time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(bot_start_time)))
 
     certs_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "full_certs.pem")
     if not os.path.exists(certs_path):
@@ -1140,6 +1069,8 @@ async def main():
 
         marker = None
         poll_count = 0
+        old_updates_buffer = []
+
         while True:
             try:
                 poll_count += 1
@@ -1152,17 +1083,144 @@ async def main():
                 updates = data.get("updates", [])
 
                 if poll_count % 10 == 0:
-                    log.info("Poll #%d: получено %d обновлений, marker=%s",
-                             poll_count, len(updates), marker)
+                    log.info("Poll #%d: получено %d обновлений, marker=%s, буфер старых: %d",
+                             poll_count, len(updates), marker, len(old_updates_buffer))
 
                 if updates:
                     log.info("Получено %d обновлений", len(updates))
 
+                # Разделяем: свежие vs старые
+                fresh_updates = []
                 for update in updates:
+                    ts = update.get("timestamp")
+                    if ts and ts < bot_start_time:
+                        old_updates_buffer.append(update)
+                    else:
+                        fresh_updates.append(update)
+
+                # Сначала обрабатываем свежие
+                for update in fresh_updates:
                     try:
-                        await handle_update(session, update, bot_start_time)
+                        await handle_update(session, update)
                     except Exception as e:
                         log.error("Ошибка обработки update: %s", e, exc_info=True)
+
+                # Если свежих не было — разбираем буфер старых
+                if not fresh_updates and old_updates_buffer:
+                    log.info("Свежих нет. Обрабатываю буфер старых обновлений: %d шт.", len(old_updates_buffer))
+                    buffer = old_updates_buffer[:]
+                    old_updates_buffer.clear()
+                    for update in buffer:
+                        try:
+                            await handle_update(session, update)
+                        except Exception as e:
+                            log.error("Ошибка обработки старого update: %s", e, exc_info=True)
+
+            except asyncio.TimeoutError:
+                continue
+            except Exception as e:
+                log.error("Ошибка polling: %s", e)
+                await asyncio.sleep(5)
+
+# ----------------- ЗАПУСК -----------------
+async def main():
+    init_db()
+    log.info("=== MAX бот запускается ===")
+    log.info("Токен: %s...%s", MAX_TOKEN[:8], MAX_TOKEN[-4:])
+    log.info("Base URL: %s", BASE_URL)
+
+    bot_start_time = time.time()
+    log.info("Время старта: %s", time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(bot_start_time)))
+
+    certs_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "full_certs.pem")
+    if not os.path.exists(certs_path):
+        log.error("Файл full_certs.pem не найден по пути: %s", certs_path)
+        log.info("Использую стандартный certifi...")
+        ssl_context = ssl.create_default_context(cafile=certifi.where())
+    else:
+        log.info("Загружаю сертификаты из файла: %s", certs_path)
+        ssl_context = ssl.create_default_context(cafile=certs_path)
+        log.info("Сертификаты загружены успешно")
+
+    connector = aiohttp.TCPConnector(ssl=ssl_context)
+
+    async with aiohttp.ClientSession(connector=connector) as session:
+        log.info("Удаляю webhook (DELETE /subscriptions)...")
+        try:
+            async with session.delete(
+                f"{BASE_URL}/subscriptions",
+                headers={"Authorization": MAX_TOKEN}
+            ) as resp:
+                log.info("DELETE /subscriptions -> статус %s", resp.status)
+                resp_text = await resp.text()
+                log.info("Ответ: %s", resp_text)
+        except Exception as e:
+            log.error("Ошибка при удалении webhook: %s", e)
+
+        await asyncio.sleep(1)
+
+        log.info("Проверяю соединение (GET /me)...")
+        try:
+            async with session.get(
+                f"{BASE_URL}/me",
+                headers={"Authorization": MAX_TOKEN}
+            ) as resp:
+                log.info("GET /me -> статус %s", resp.status)
+                resp_text = await resp.text()
+                log.info("Ответ /me: %s", resp_text[:500])
+        except Exception as e:
+            log.error("Ошибка GET /me: %s", e)
+
+        log.info("=== Polling запущен. Ожидание сообщений... ===")
+
+        marker = None
+        poll_count = 0
+        old_updates_buffer = []
+
+        while True:
+            try:
+                poll_count += 1
+                data = await api_get_updates(session, marker)
+
+                new_marker = data.get("marker")
+                if new_marker is not None:
+                    marker = new_marker
+
+                updates = data.get("updates", [])
+
+                if poll_count % 10 == 0:
+                    log.info("Poll #%d: получено %d обновлений, marker=%s, буфер старых: %d",
+                             poll_count, len(updates), marker, len(old_updates_buffer))
+
+                if updates:
+                    log.info("Получено %d обновлений", len(updates))
+
+                # Разделяем: свежие vs старые
+                fresh_updates = []
+                for update in updates:
+                    ts = update.get("timestamp")
+                    if ts and ts < bot_start_time:
+                        old_updates_buffer.append(update)
+                    else:
+                        fresh_updates.append(update)
+
+                # Сначала обрабатываем свежие
+                for update in fresh_updates:
+                    try:
+                        await handle_update(session, update)
+                    except Exception as e:
+                        log.error("Ошибка обработки update: %s", e, exc_info=True)
+
+                # Если свежих не было — разбираем буфер старых
+                if not fresh_updates and old_updates_buffer:
+                    log.info("Свежих нет. Обрабатываю буфер старых обновлений: %d шт.", len(old_updates_buffer))
+                    buffer = old_updates_buffer[:]
+                    old_updates_buffer.clear()
+                    for update in buffer:
+                        try:
+                            await handle_update(session, update)
+                        except Exception as e:
+                            log.error("Ошибка обработки старого update: %s", e, exc_info=True)
 
             except asyncio.TimeoutError:
                 continue
