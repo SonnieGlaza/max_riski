@@ -60,6 +60,7 @@ def init_db():
     """)
     c.execute("ALTER TABLE answers ADD COLUMN IF NOT EXISTS consent_status BOOLEAN DEFAULT FALSE")
     c.execute("ALTER TABLE answers ADD COLUMN IF NOT EXISTS created_at TIMESTAMP")
+    c.execute("ALTER TABLE progress ADD COLUMN IF NOT EXISTS started_at TIMESTAMP")
     c.execute("""
         CREATE TABLE IF NOT EXISTS progress (
             user_id BIGINT PRIMARY KEY,
@@ -82,11 +83,22 @@ def get_progress(db_id):
 def set_progress(db_id, step_index, uni_page=0, started=1):
     conn = get_db()
     c = conn.cursor()
-    c.execute(
-        "INSERT INTO progress (user_id, step_index, uni_page, started) VALUES (%s,%s,%s,%s) "
-        "ON CONFLICT (user_id) DO UPDATE SET step_index=%s, uni_page=%s, started=%s",
-        (db_id, step_index, uni_page, started, step_index, uni_page, started)
-    )
+    if started == 1:
+        c.execute(
+            "INSERT INTO progress (user_id, step_index, uni_page, started, started_at) "
+            "VALUES (%s,%s,%s,%s,%s) "
+            "ON CONFLICT (user_id) DO UPDATE SET step_index=%s, uni_page=%s, started=%s, "
+            "started_at=COALESCE(progress.started_at, EXCLUDED.started_at)",
+            (db_id, step_index, uni_page, started, datetime.now(),
+             step_index, uni_page, started)
+        )
+    else:
+        c.execute(
+            "INSERT INTO progress (user_id, step_index, uni_page, started) "
+            "VALUES (%s,%s,%s,%s) "
+            "ON CONFLICT (user_id) DO UPDATE SET step_index=%s, uni_page=%s, started=%s",
+            (db_id, step_index, uni_page, started, step_index, uni_page, started)
+        )
     conn.commit()
     conn.close()
 
@@ -715,13 +727,17 @@ def generate_xlsx(today_only=False):
     if today_only:
         today = date.today()
         c.execute(
-            "SELECT * FROM answers WHERE created_at::date = %s "
-            "ORDER BY created_at ASC",
+            "SELECT a.* FROM answers a "
+            "LEFT JOIN progress p ON a.user_id = p.user_id "
+            "WHERE a.created_at::date = %s "
+            "ORDER BY p.started_at ASC NULLS LAST",
             (today,)
         )
     else:
         c.execute(
-            "SELECT * FROM answers ORDER BY created_at ASC NULLS LAST"
+            "SELECT a.* FROM answers a "
+            "LEFT JOIN progress p ON a.user_id = p.user_id "
+            "ORDER BY p.started_at ASC NULLS LAST"
         )
 
     rows = c.fetchall()
