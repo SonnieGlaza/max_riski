@@ -10,6 +10,8 @@ from psycopg2.extras import RealDictCursor
 import aiohttp
 import ssl
 import certifi
+import time
+from datetime import datetime, date
 
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [MAX] %(levelname)s %(message)s")
 log = logging.getLogger("max_bot")
