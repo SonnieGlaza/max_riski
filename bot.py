@@ -1095,7 +1095,7 @@ async def main():
     log.info("Base URL: %s", BASE_URL)
 
     bot_start_time = time.time()
-    log.info("Время старта: %s", datetime.fromtimestamp(bot_start_time).strftime('%Y-%m-%d %H:%M:%S'))
+    log.info("Бот запущен. Время старта: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(bot_start_time))}")
 
     certs_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "full_certs.pem")
     if not os.path.exists(certs_path):
