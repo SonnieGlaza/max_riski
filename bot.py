@@ -69,8 +69,116 @@ def init_db():
             started INTEGER DEFAULT 0
         )
     """)
+    # Связь «анкета в VK ↔ чат в MAX»: MAX не отдаёт телефон, поэтому адрес для
+    # рассылки в MAX берём отсюда. Заполняется, когда человек пишет MAX-боту.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS max_contacts (
+            user_id BIGINT PRIMARY KEY,
+            max_chat_id BIGINT,
+            max_user_id BIGINT,
+            fio TEXT,
+            phone TEXT,
+            email TEXT,
+            source TEXT,
+            linked_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS idx_max_contacts_chat ON max_contacts(max_chat_id)")
+    # «Не беспокоить»: таблицу создаёт и VK-бот; здесь — на случай запуска MAX отдельно.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS opt_out (
+            id BIGSERIAL PRIMARY KEY,
+            user_id BIGINT,
+            email TEXT,
+            phone TEXT,
+            channel TEXT NOT NULL DEFAULT 'all',
+            source TEXT,
+            reason TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+    """)
+    c.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_opt_out_user "
+              "ON opt_out(user_id) WHERE user_id IS NOT NULL")
     conn.commit()
     conn.close()
+
+
+# ----------------- СВЯЗЬ С АНКЕТОЙ И «НЕ БЕСПОКОИТЬ» -----------------
+def register_max_contact(db_id, chat_id=None, user_id=None, fio=None):
+    """Запомнить адрес в MAX для человека из анкеты.
+
+    db_id — тот же ключ, что и в answers/progress: -|chat_id| для чатов,
+    либо user_id для личных диалогов. Обновляем только непустые поля, чтобы
+    повторное сообщение не затирало уже найденное ФИО.
+    """
+    if db_id is None:
+        return
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute(
+            "INSERT INTO max_contacts (user_id, max_chat_id, max_user_id, fio, source) "
+            "VALUES (%s,%s,%s,%s,'max_bot') "
+            "ON CONFLICT (user_id) DO UPDATE SET "
+            "max_chat_id=COALESCE(EXCLUDED.max_chat_id, max_contacts.max_chat_id), "
+            "max_user_id=COALESCE(EXCLUDED.max_user_id, max_contacts.max_user_id), "
+            "fio=COALESCE(EXCLUDED.fio, max_contacts.fio), "
+            "linked_at=now()",
+            (db_id, chat_id, user_id, fio)
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        log.error("Не удалось сохранить связь с MAX для %s", db_id, exc_info=True)
+    finally:
+        conn.close()
+
+
+def is_opted_out(db_id):
+    """Стоит ли человек в списке «не беспокоить» (кнопка есть и в MAX-боте)."""
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute("SELECT 1 FROM opt_out WHERE user_id=%s LIMIT 1", (db_id,))
+        return c.fetchone() is not None
+    finally:
+        conn.close()
+
+
+def register_opt_out(db_id):
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute("SELECT 1 FROM opt_out WHERE user_id=%s LIMIT 1", (db_id,))
+        existed = c.fetchone() is not None
+        c.execute(
+            "INSERT INTO opt_out (user_id, channel, source, reason) "
+            "VALUES (%s,'all','max_bot','кнопка «не беспокоить» в MAX') "
+            "ON CONFLICT DO NOTHING",
+            (db_id,)
+        )
+        conn.commit()
+        return not existed
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def unregister_opt_out(db_id):
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute("DELETE FROM opt_out WHERE user_id=%s", (db_id,))
+        removed = c.rowcount or 0
+        conn.commit()
+        return removed > 0
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 def get_progress(db_id):
     conn = get_db()
@@ -449,7 +557,30 @@ MESSAGES = {
     ),
     "already_finished": (
         "✅ Вы уже заполнили анкету ранее. Если хотите пройти заново — нажмите кнопку ниже."
-    )
+    ),
+    "opt_out_done": (
+        "🔕 Готово: больше не будем присылать напоминания и рассылки.\n\n"
+        "Анкету можно продолжить в любой момент — просто ответьте на вопрос.\n\n"
+        "Передумаете — отправьте /подписаться."
+    ),
+    "opt_out_already": (
+        "🔕 Вы уже в списке «не беспокоить»: напоминания и рассылки вам не приходят.\n\n"
+        "Вернуть их можно командой /подписаться."
+    ),
+    "opt_out_resumed": (
+        "🔔 Готово: напоминания и рассылки снова будут приходить. "
+        "Спасибо, что остаётесь на связи!"
+    ),
+}
+
+OPT_OUT_COMMANDS = {
+    "🔕 не беспокоить", "/не беспокоить", "/не_беспокоить", "не беспокоить",
+    "отписаться", "/отписаться", "/отписка", "/стоп", "стоп", "/stop", "stop",
+    "/unsubscribe", "unsubscribe",
+}
+OPT_IN_COMMANDS = {
+    "🔔 вернуть рассылки", "/подписаться", "подписаться", "/вернуть рассылки",
+    "/вернуть_рассылки", "/subscribe", "subscribe",
 }
 
 EXPORT_HEADERS = {
@@ -472,7 +603,10 @@ def make_keyboard(kb_type):
     if kb_type == "start":
         return [{"type": "inline_keyboard", "payload": {"buttons": [[{"type": "message", "text": "Начать анкету"}]]}}]
     if kb_type == "restart":
-        return [{"type": "inline_keyboard", "payload": {"buttons": [[{"type": "message", "text": "🔄 Пройти заново"}]]}}]
+        return [{"type": "inline_keyboard", "payload": {"buttons": [
+            [{"type": "message", "text": "🔄 Пройти заново"}],
+            [{"type": "message", "text": "🔕 Не беспокоить"}],
+        ]}}]
     return None
 
 # ----------------- HTTP КЛИЕНТ MAX API -----------------
@@ -964,6 +1098,43 @@ async def handle_message(session, chat_id, db_id, text, user_id=None):
     log.info("handle_message: chat_id=%s, db_id=%s, text=%r", chat_id, db_id, text[:50])
 
     text_lower = text.lower()
+    normalized = " ".join(text_lower.split())
+
+    # Запоминаем адрес в MAX — по нему VK-бот потом шлёт рассылку в MAX.
+    # Делаем это до любых команд: человек мог написать «/start» или кнопку.
+    fio = None
+    if abs(db_id) not in ADMIN_IDS:
+        conn = get_db()
+        try:
+            c = conn.cursor()
+            c.execute("SELECT fio FROM answers WHERE user_id=%s", (db_id,))
+            row = c.fetchone()
+            fio = row[0] if row and row[0] else None
+        finally:
+            conn.close()
+    register_max_contact(
+        db_id,
+        chat_id=abs(int(chat_id)) if chat_id else None,
+        user_id=abs(int(user_id)) if user_id else None,
+        fio=fio,
+    )
+
+    # «Не беспокоить» и возврат в рассылки — до остальных команд.
+    if normalized in OPT_OUT_COMMANDS:
+        newly = register_opt_out(db_id)
+        log.info("MAX: команда «не беспокоить» db_id=%s new=%s", db_id, newly)
+        await send_message(
+            session, chat_id,
+            MESSAGES["opt_out_done"] if newly else MESSAGES["opt_out_already"],
+            user_id=user_id
+        )
+        return
+
+    if normalized in OPT_IN_COMMANDS:
+        restored = unregister_opt_out(db_id)
+        log.info("MAX: возврат в рассылки db_id=%s restored=%s", db_id, restored)
+        await send_message(session, chat_id, MESSAGES["opt_out_resumed"], user_id=user_id)
+        return
 
     if text_lower in ["/export", "/выгрузить"]:
         if abs(db_id) in ADMIN_IDS:
@@ -987,6 +1158,15 @@ async def handle_message(session, chat_id, db_id, text, user_id=None):
     if text == "🔄 Пройти заново":
         set_progress(db_id, 0, 0, 0)
         await send_message(session, chat_id, MESSAGES["welcome"], keyboard_type="start", user_id=user_id)
+        return
+
+    if normalized == "🔕 не беспокоить":
+        newly = register_opt_out(db_id)
+        await send_message(
+            session, chat_id,
+            MESSAGES["opt_out_done"] if newly else MESSAGES["opt_out_already"],
+            user_id=user_id
+        )
         return
 
     step_index, uni_page, started = get_progress(db_id)
