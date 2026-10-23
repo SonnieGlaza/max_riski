@@ -1482,6 +1482,7 @@ async def main():
             log.info("Проверяю непрочитанные диалоги...")
             await process_unread_on_startup(session, old_updates, bot_user_id)
 
+        print("Бот запущен", flush=True)
         log.info("=== Polling запущен. Ожидание сообщений... ===")
 
         poll_count = 0
